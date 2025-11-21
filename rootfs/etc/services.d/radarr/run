@@ -1,0 +1,14 @@
+#!/bin/bash
+# Radarr service runner
+set -e
+
+echo "[radarr] Starting Radarr web server..."
+
+# Change to appropriate user based on runtime mode
+if [ "$(id -u)" -eq 0 ]; then
+    # Running as root - radarr will drop privileges itself via config
+    exec /opt/Radarr/Radarr -nobrowser -data=/var/lib/radarr/
+else
+    # Running in rootless mode - already non-root
+    exec /opt/Radarr/Radarr -nobrowser -data=/var/lib/radarr/
+fi

@@ -1,0 +1,28 @@
+services:
+  radarr:
+    image: ghcr.io/boxharbor/radarr:latest
+    container_name: boxharbor-radarr
+    ports:
+      - "7878:7878"
+    volumes:
+      # Configuration directory
+      - ./config:/var/lib/radarr
+    environment:
+      # User/Group IDs (match your host user)
+      - PUID=1000
+      - PGID=1000
+      # Timezone
+      - TZ=Etc/UTC
+      # File creation mask
+      - UMASK=022
+    restart: unless-stopped
+    # Health check
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:7878/" ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    # Security options (optional but recommended)
+    security_opt:
+      - no-new-privileges:true

@@ -1,0 +1,140 @@
+name: Cleanup Docker Images
+
+on:
+  schedule:
+    # Exécute tous les dimanches à 3h du matin
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: baseimage-alpine
+
+jobs:
+  cleanup-ghcr:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    
+    steps:
+      - name: Cleanup GHCR packages
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const packageName = process.env.IMAGE_NAME;
+            const owner = context.repo.owner;
+            
+            // Récupère toutes les versions du package
+            const versions = await github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg({
+              package_type: 'container',
+              package_name: packageName,
+              org: owner,
+              per_page: 100
+            }).catch(() => 
+              github.rest.packages.getAllPackageVersionsForPackageOwnedByUser({
+                package_type: 'container',
+                package_name: packageName,
+                username: owner,
+                per_page: 100
+              })
+            );
+            
+            // Pattern pour versions sémantiques: 1.2.3, 1.2, 1
+            const semverPattern = /^(\d+)\.(\d+)\.(\d+)$|^(\d+)\.(\d+)$|^(\d+)$/;
+            
+            // Tags à conserver
+            const keepTags = ['latest', 'develop'];
+            
+            for (const version of versions.data) {
+              const tags = version.metadata?.container?.tags || [];
+              
+              // Vérifie si cette version contient des tags à garder
+              const hasKeepTag = tags.some(tag => 
+                keepTags.includes(tag) || semverPattern.test(tag)
+              );
+              
+              // Ne supprime QUE les versions avec des tags non désirés
+              // Les manifests sans tags (SHA256 des architectures) sont conservés automatiquement
+              if (!hasKeepTag && tags.length > 0) {
+                console.log(`Deleting version ${version.id} with tags: ${tags.join(', ')}`);
+                try {
+                  await github.rest.packages.deletePackageVersionForOrg({
+                    package_type: 'container',
+                    package_name: packageName,
+                    org: owner,
+                    package_version_id: version.id
+                  }).catch(() =>
+                    github.rest.packages.deletePackageVersionForUser({
+                      package_type: 'container',
+                      package_name: packageName,
+                      username: owner,
+                      package_version_id: version.id
+                    })
+                  );
+                } catch (error) {
+                  console.error(`Failed to delete version ${version.id}: ${error.message}`);
+                }
+              } else {
+                console.log(`Keeping version ${version.id} with tags: ${tags.join(', ')}`);
+              }
+            }
+
+  cleanup-dockerhub:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Cleanup DockerHub tags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          # Obtenir le token JWT
+          TOKEN=$(curl -s -H "Content-Type: application/json" \
+            -X POST https://hub.docker.com/v2/users/login/ \
+            -d "{\"username\": \"${DOCKERHUB_USERNAME}\", \"password\": \"${DOCKERHUB_TOKEN}\"}" \
+            | jq -r .token)
+          
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "Failed to authenticate with Docker Hub"
+            exit 1
+          fi
+          
+          REPO="${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+          
+          # Récupérer tous les tags
+          TAGS=$(curl -s -H "Authorization: JWT ${TOKEN}" \
+            "https://hub.docker.com/v2/repositories/${REPO}/tags/?page_size=100" \
+            | jq -r '.results[].name')
+          
+          # Pattern pour versions sémantiques
+          SEMVER_PATTERN="^[0-9]+(\.[0-9]+)?(\.[0-9]+)?$"
+          
+          echo "Found tags:"
+          echo "$TAGS"
+          echo ""
+          
+          # Parcourir les tags et supprimer ceux qui ne correspondent pas
+          for TAG in $TAGS; do
+            # Garder latest, develop et les versions sémantiques
+            if [ "$TAG" = "latest" ] || [ "$TAG" = "develop" ]; then
+              echo "✓ Keeping: $TAG (protected)"
+            elif echo "$TAG" | grep -qE "$SEMVER_PATTERN"; then
+              echo "✓ Keeping: $TAG (semver)"
+            else
+              echo "✗ Deleting: $TAG"
+              curl -s -X DELETE \
+                -H "Authorization: JWT ${TOKEN}" \
+                "https://hub.docker.com/v2/repositories/${REPO}/tags/${TAG}/"
+              
+              # Vérifier le résultat
+              if [ $? -eq 0 ]; then
+                echo "  → Deleted successfully"
+              else
+                echo "  → Failed to delete"
+              fi
+            fi
+          done
+          
+          echo ""
+          echo "Cleanup completed!"
