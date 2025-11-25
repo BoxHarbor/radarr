@@ -1,0 +1,42 @@
+name: Check Radarr Updates
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Get latest Radarr version
+        id: radarr
+        run: |
+          LATEST=$(curl -s https://api.github.com/repos/Radarr/Radarr/releases/latest | jq -r '.tag_name' | sed 's/v//')
+          CURRENT=$(grep -oP 'RADARR_VERSION: \K[0-9.]+' .github/workflows/build-push.yml)
+          
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "needs_update=$([ "$LATEST" != "$CURRENT" ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+      
+      - name: Create update PR
+        if: steps.radarr.outputs.needs_update == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update Radarr to ${{ steps.radarr.outputs.latest }}"
+          branch: update/radarr-${{ steps.radarr.outputs.latest }}
+          title: "⬆️ Update Radarr to ${{ steps.radarr.outputs.latest }}"
+          body: |
+            ## 🆕 New Radarr version detected
+            
+            **Current:** `${{ steps.radarr.outputs.current }}`
+            **Latest:** `${{ steps.radarr.outputs.latest }}`
+            
+            [Release Notes](https://github.com/Radarr/Radarr/releases/tag/v${{ steps.radarr.outputs.latest }})
+            
+            ### ✅ Automated Tests
+            Multi-platform tests will run automatically on this PR.
+          labels: automated,update,radarr
